@@ -34,6 +34,12 @@ async function main() {
     const term = a.nativeName || a.name;
     process.stdout.write(`[${i + 1}/${snapshot.actresses.length}] ${term}... `);
 
+    if (a.minnanoAvUrl && a.ratings) {
+      console.log(`✓ (already enriched)`);
+      matched++;
+      continue;
+    }
+
     const lookup = await enricher.lookup({
       name: a.name,
       nativeName: a.nativeName,
@@ -59,6 +65,14 @@ async function main() {
     } else {
       skipped++;
       console.log(`✗ not found`);
+    }
+
+    // Periodically save progress to disk
+    if ((i + 1) % 5 === 0 || i === snapshot.actresses.length - 1) {
+      const validated = validateSnapshot(snapshot);
+      if (validated) {
+        await writeFile(snapshotFile, JSON.stringify(validated, null, 2), 'utf8');
+      }
     }
   }
 

@@ -18,10 +18,16 @@ import {
   validateSnapshot,
 } from '../src/lib/actresses';
 import {
+  clearMinnanoAvCache,
+  extractGojuonSyllables,
   extractMinnanoIdentity,
+  extractTargetKana,
+  getMinnanoAvCacheStats,
+  katakanaToHiragana,
   matchesIdentity,
   normalizeName,
   parseMinnanoAvProfile,
+  searchMinnanoAv,
 } from '../src/server/jav-crawler/minnano-av';
 import {
   translateTagToVietnamese,
@@ -227,10 +233,10 @@ test('parses minnano-av quantitative ratings, original tags, and debut year', ()
 });
 
 test('translates tags to Vietnamese cleanly with composite tags and patterns', () => {
-  assert.deepEqual(translateTagToVietnamese('巨乳'), ['Ngực khủng']);
+  assert.deepEqual(translateTagToVietnamese('巨乳'), ['Vó tu']);
   assert.deepEqual(translateTagToVietnamese('美人'), ['Mỹ nhân']);
   assert.deepEqual(translateTagToVietnamese('パフィーニップル，美体，美肌'), [
-    'Nhũ hoa phồng',
+    'Nầm múp',
     'Dáng người tuyệt mỹ',
     'Làn da mịn màng',
   ]);
@@ -262,11 +268,11 @@ test('skips tags without translations', () => {
   assert.deepEqual(translateTagToVietnamese('未知のタグ'), []);
   assert.deepEqual(translateTagToEnglish('未知のタグ'), []);
   assert.deepEqual(translateTagToVietnamese('巨乳，未知のタグ'), [
-    'Ngực khủng',
+    'Vó tu',
   ]);
   assert.deepEqual(translateTagToEnglish('巨乳，未知のタグ'), ['Big Breasts']);
   assert.deepEqual(translateTags(['巨乳', '未知のタグ', '美人'], 'vi'), [
-    'Ngực khủng',
+    'Vó tu',
     'Mỹ nhân',
   ]);
   assert.deepEqual(translateTags(['巨乳', '未知のタグ', '美人'], 'en'), [
@@ -497,4 +503,164 @@ test('isSingleActressMovie and filterSingleActressMovies skip movies with 2 or m
       'https://jav.guru/actress/another-solo-star/',
     ],
   );
+});
+
+test('extracts Gojuon syllables and target kana accurately', () => {
+  assert.equal(katakanaToHiragana('ミア・ケイ'), 'みあ・けい');
+  assert.equal(katakanaToHiragana('エマ'), 'えま');
+
+  assert.deepEqual(
+    extractGojuonSyllables(['波多野結衣', 'はたのゆい', 'Hatano Yui']),
+    ['ha', 'yu'],
+  );
+  assert.deepEqual(
+    extractGojuonSyllables(['彩月七緒', 'さつきなお', 'Satsuki Nao']),
+    ['sa', 'na'],
+  );
+  assert.deepEqual(
+    extractGojuonSyllables(['神宮寺ナオ', 'じんぐうじなお', 'Jinguuji Nao']),
+    ['zi', 'na'],
+  );
+  assert.deepEqual(
+    extractGojuonSyllables(['三上悠亜', 'みかみゆあ', 'Mikami Yua']),
+    ['mi', 'yu'],
+  );
+
+  assert.equal(
+    extractTargetKana(['波多野結衣', 'はたのゆい', 'Hatano Yui']),
+    'はたのゆい',
+  );
+  assert.equal(
+    extractTargetKana(['Hatano Yui', 'はたの ゆい']),
+    'はたのゆい',
+  );
+});
+
+test('manages in-memory cache correctly for Gojuon lookups', async () => {
+  clearMinnanoAvCache();
+  const initialStats = getMinnanoAvCacheStats();
+  assert.equal(initialStats.directorySize, 0);
+  assert.equal(initialStats.cachedPages, 0);
+  assert.equal(initialStats.cachedProfiles, 0);
+  assert.equal(initialStats.resolvedLookups, 0);
+
+  // Mock global fetch
+  const originalFetch = globalThis.fetch;
+  const fetchedUrls: string[] = [];
+
+  const mockListPageHtml = `
+    <html>
+      <div class="pagination"><span class='page_info'>1 / 1 ページ (2件)</span></div>
+      <table>
+        <tr>
+          <td><a href="actress101.html"><img src="101.jpg" alt="波多野結衣" /></a></td>
+          <td class="details">
+            <h2 class="ttl"><a href="actress101.html">波多野結衣</a></h2>
+            <p class="furi">はたのゆい / Hatano Yui</p>
+          </td>
+        </tr>
+        <tr>
+          <td><a href="actress102.html"><img src="102.jpg" alt="八蜜凛" /></a></td>
+          <td class="details">
+            <h2 class="ttl"><a href="actress102.html">八蜜凛</a></h2>
+            <p class="furi">はちみつりん / Hachimitsu Rin</p>
+          </td>
+        </tr>
+      </table>
+    </html>
+  `;
+
+  const mockHatanoProfileHtml = `
+    <html>
+      <title>波多野結衣（はたのゆい）- AV女優プロフィール - みんなのAV</title>
+      <h1>波多野結衣はたのゆい / Hatano Yui</h1>
+      <table class="rate-table">
+        <tr><td class="t9">総合評価</td><td class="t9">8.5</td></tr>
+      </table>
+    </html>
+  `;
+
+  const mockHachimitsuProfileHtml = `
+    <html>
+      <title>八蜜凛（はちみつりん）- AV女優プロフィール - みんなのAV</title>
+      <h1>八蜜凛はちみつりん / Hachimitsu Rin</h1>
+      <table class="rate-table">
+        <tr><td class="t9">総合評価</td><td class="t9">9.0</td></tr>
+      </table>
+    </html>
+  `;
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    fetchedUrls.push(urlStr);
+
+    if (urlStr.includes('actress_list.php')) {
+      return new Response(mockListPageHtml, { status: 200 });
+    }
+    if (urlStr.includes('actress101.html')) {
+      return new Response(mockHatanoProfileHtml, { status: 200 });
+    }
+    if (urlStr.includes('actress102.html')) {
+      return new Response(mockHachimitsuProfileHtml, { status: 200 });
+    }
+    return new Response('Not Found', { status: 404 });
+  };
+
+  try {
+    // 1. First lookup: Hatano Yui (fetches list page + profile page)
+    const result1 = await searchMinnanoAv('Hatano Yui', [
+      '波多野結衣',
+      'はたのゆい',
+      'Hatano Yui',
+    ]);
+    assert.ok(result1);
+    assert.equal(result1.name, '波多野結衣');
+    assert.equal(result1.ratings?.overall, 8.5);
+    assert.equal(fetchedUrls.length, 2); // 1 list page + 1 profile page
+
+    // 2. Second lookup: Hatano Yui AGAIN (100% in-memory cache hit, 0 network requests!)
+    const result2 = await searchMinnanoAv('Hatano Yui', [
+      '波多野結衣',
+      'はたのゆい',
+      'Hatano Yui',
+    ]);
+    assert.ok(result2);
+    assert.equal(result2.name, '波多野結衣');
+    assert.equal(fetchedUrls.length, 2); // No new requests!
+
+    // 3. Third lookup: Hachimitsu Rin (was already indexed from page 1 into directory cache! Only fetches her profile page)
+    const result3 = await searchMinnanoAv('Hachimitsu Rin', [
+      '八蜜凛',
+      'はちみつりん',
+      'Hachimitsu Rin',
+    ]);
+    assert.ok(result3);
+    assert.equal(result3.name, '八蜜凛');
+    assert.equal(result3.ratings?.overall, 9.0);
+    assert.equal(fetchedUrls.length, 3); // Only 1 profile page request, 0 list requests!
+
+    // 4. Fourth lookup: Hachimitsu Rin AGAIN (100% in-memory cache hit)
+    const result4 = await searchMinnanoAv('Hachimitsu Rin', [
+      '八蜜凛',
+      'はちみつりん',
+      'Hachimitsu Rin',
+    ]);
+    assert.ok(result4);
+    assert.equal(fetchedUrls.length, 3); // No new requests!
+
+    // Verify cache statistics
+    const stats = getMinnanoAvCacheStats();
+    assert.ok(stats.directorySize >= 2);
+    assert.equal(stats.cachedPages, 1);
+    assert.equal(stats.cachedProfiles, 2);
+
+    // Clear cache
+    clearMinnanoAvCache();
+    const clearedStats = getMinnanoAvCacheStats();
+    assert.equal(clearedStats.directorySize, 0);
+    assert.equal(clearedStats.cachedPages, 0);
+    assert.equal(clearedStats.cachedProfiles, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
